@@ -349,6 +349,17 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 .bar-fill { display: block; width: var(--bar-width); height: 100%; border-radius: inherit; background: linear-gradient(90deg, #78a946, var(--lime)); }
 .bar-value { text-align: right; font-variant-numeric: tabular-nums; }
 
+.progression-recent-table { table-layout: fixed; }
+.progression-recent-table th:first-child { width: 40%; }
+.progression-recent-table th:nth-child(2) { width: 26%; }
+.progression-recent-table tbody td { white-space: normal; vertical-align: middle; overflow-wrap: anywhere; }
+.progression-recent-table .player-name > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.progression-gains { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.progression-gains span { white-space: nowrap; }
+.progression-sources { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+.progression-sources li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 1px 8px; }
+.progression-sources span { color: var(--muted); font-size: .875rem; }
+
 .breadcrumbs { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .88rem; margin-bottom: 12px; }
 .breadcrumbs .icon { font-size: 1rem; color: var(--soft); }
 .inline-link { font-weight: 650; color: var(--lime-text); }

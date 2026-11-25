@@ -1,7 +1,7 @@
 import {
   ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, club, clubPlayers,
   clubMatches, clubMatchStats, experienceHistory, matchPage, normaliseAddress, number, player, readable,
-  walletClubs, walletPlayers, walletProgression,
+  recentProgressionSources, walletClubs, walletPlayers, walletProgression,
 } from "./mfl.js";
 import { connectWallet, disconnectWallet, watchWallet } from "./wallet.js";
 
@@ -14,6 +14,7 @@ const storageKey = "touchline-active-wallet-v1";
 const pageSize = 18;
 const clubMatchPageSize = 5;
 const clubMatchRefreshMs = 5 * 60 * 1000;
+const recentProgressionRefreshMs = 5 * 60 * 1000;
 const clubSections = { results: "Results", schedule: "Upcoming matches", roster: "Roster" };
 const numberFormat = new Intl.NumberFormat();
 const xgFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -61,12 +62,12 @@ function getRoute() {
   return { section: "players" };
 }
 
-function resource(key, load, maxAge = Infinity) {
-  const cached = resources.get(key);
-  if (cached?.status === "ready" && Date.now() - cached.loadedAt >= maxAge) resources.delete(key);
-  if (!resources.has(key)) {
+function resource(key, load, maxAge = Infinity, cache = resources) {
+  const cached = cache.get(key);
+  if (cached?.status === "ready" && Date.now() - cached.loadedAt >= maxAge) cache.delete(key);
+  if (!cache.has(key)) {
     const entry = { key, status: "loading" };
-    resources.set(key, entry);
+    cache.set(key, entry);
     Promise.resolve().then(load).then(value => {
       entry.status = "ready";
       entry.value = value;
@@ -75,10 +76,10 @@ function resource(key, load, maxAge = Infinity) {
       entry.status = "error";
       entry.error = error.message || "We couldn't load this data.";
     }).finally(() => {
-      if (resources.get(key) === entry) render(true);
+      if (cache.get(key) === entry) render(true);
     });
   }
-  return resources.get(key);
+  return cache.get(key);
 }
 
 function filterFor(scope) {
@@ -327,15 +328,84 @@ function gainBars(rows, field) {
   }).join("")}</div>`;
 }
 
+async function loadProgressionSources(rows, checkedAt) {
+  const sources = new Map();
+  const concurrency = 4;
+  for (let index = 0; index < rows.length; index += concurrency) {
+    const batch = rows.slice(index, index + concurrency);
+    const histories = await Promise.allSettled(batch.map(({ person }) => experienceHistory(person.id)));
+    for (const [offset, history] of histories.entries()) {
+      const { person, changes } = batch[offset];
+      if (history.status === "fulfilled") sources.set(person.id, recentProgressionSources(history.value, changes, checkedAt));
+    }
+  }
+  return sources;
+}
+
+function progressionSourceList(gains, recorded = []) {
+  const sources = recorded.filter(source => source.reason);
+  const attributed = new Set(sources.flatMap(source => source.fields));
+  const unavailable = gains.filter(field => !attributed.has(field.key));
+  return `<ul class="progression-sources">${sources.map(source => `<li>
+    <strong>${esc(readable(source.reason))}</strong><span>${gains.filter(field => source.fields.includes(field.key)).map(field => field.short).join(", ")}</span>
+  </li>`).join("")}${unavailable.length ? `<li><strong>Source unavailable</strong><span>${unavailable.map(field => field.short).join(", ")}</span></li>` : ""}</ul>`;
+}
+
+function recentProgressionPanel(address, players) {
+  const scope = "recent-progression";
+  const summary = resource(scope + ":" + address, async () => ({
+    changes: await walletProgression(address, "24H"), sourcePages: new Map(),
+  }), recentProgressionRefreshMs);
+  const error = [players, summary].find(entry => entry.status === "error");
+  let rows = [];
+  let sources;
+  let body;
+  if (error) body = loadError(error, "Recent progression couldn't be loaded");
+  else if (players.status !== "ready" || summary.status !== "ready") body = loading("Loading progression for the last 24 hours");
+  else {
+    rows = players.value.map(person => {
+      const changes = summary.value.changes[person.id];
+      return { person, changes, gains: gainFields.filter(field => getGain(changes, field.key) > 0) };
+    }).filter(row => row.gains.length);
+    rows.sort((a, b) => getGain(b.changes, "overall") - getGain(a.changes, "overall") || sortByRating(a.person, b.person));
+
+    if (!rows.length) body = notice("No progression gains in the last 24 hours", "", { symbol: "show_chart" });
+    else {
+      const page = Math.min(filterFor(scope).page, Math.ceil(rows.length / pageSize) - 1);
+      filterFor(scope).page = page;
+      const visible = rows.slice(page * pageSize, (page + 1) * pageSize);
+      const key = visible.map(row => row.person.id).join(",");
+      sources = resource(key, () => loadProgressionSources(visible, summary.loadedAt), Infinity, summary.value.sourcePages);
+      body = `<div class="table-scroll" tabindex="0" aria-label="Player gains in the last 24 hours">
+        <table class="data-table progression-recent-table">
+          <caption class="visually-hidden">Positive rating changes in the last 24 hours and their sources</caption>
+          <thead><tr><th scope="col">Player</th><th scope="col">Gains</th><th scope="col">Source</th></tr></thead>
+          <tbody>${visible.map(({ person, changes, gains }) => `<tr><td>${playerName(person)}</td>
+            <td><div class="progression-gains">${gains.map(field => `<span class="delta number">+${showNumber(getGain(changes, field.key))} ${field.short}</span>`).join("")}</div></td>
+            <td>${sources.status === "loading" ? '<span class="muted">Checking source…</span>' : progressionSourceList(gains, sources.value?.get(person.id))}</td>
+          </tr>`).join("")}</tbody>
+        </table></div>${pagination(rows.length, page, scope)}`;
+    }
+  }
+  const checking = summary.status === "loading" || sources?.status === "loading";
+  return `<section class="panel section-gap" aria-labelledby="recent-progression-title">
+    <div class="panel-heading"><div><h2 id="recent-progression-title">Last 24 hours</h2>
+      ${rows.length ? `<p class="heading-meta" role="status">${showNumber(rows.length)} ${rows.length === 1 ? "player" : "players"} with gains</p>` : ""}
+    </div><button id="recent-progression-refresh" class="button" type="button" data-action="retry" data-key="${esc(summary.key)}" aria-label="Refresh recent progression"${checking ? " disabled" : ""}>Refresh</button></div>
+    ${body}
+  </section>`;
+}
+
 function renderProgression() {
   const address = wallet.address;
   const players = resource("wallet-players:" + address, () => walletPlayers(address));
   const progression = resource("wallet-progression:" + address, () => walletProgression(address));
-  const hero = pageHero("Progression", "Follow all-time attribute gains across the wallet’s players.");
+  const hero = pageHero("Progression", "Track recent and all-time attribute gains across the wallet’s players.");
+  const overview = hero + recentProgressionPanel(address, players);
   const error = [players, progression].find(entry => entry.status === "error");
-  if (error) return hero + `<section class="panel section-gap">${loadError(error, "Progression couldn't be loaded")}</section>`;
-  if (players.status === "loading" || progression.status === "loading") return hero + `<section class="panel section-gap">${loading("Loading MFL progression")}</section>`;
-  if (!players.value.length) return hero + `<section class="panel section-gap">${notice("No players found", "Choose a wallet with players to view progression.", { symbol: "groups" })}</section>`;
+  if (error) return overview + `<section class="panel section-gap">${loadError(error, "All-time progression couldn't be loaded")}</section>`;
+  if (players.status === "loading" || progression.status === "loading") return overview + `<section class="panel section-gap">${loading("Loading all-time MFL progression")}</section>`;
+  if (!players.value.length) return overview + `<section class="panel section-gap">${notice("No players found", "Choose a wallet with players to view progression.", { symbol: "groups" })}</section>`;
   const rows = players.value.map(person => ({ person, changes: progression.value[person.id] }));
   const state = filterFor("progression");
   const allGains = rows.map(row => getGain(row.changes, "overall")).filter(value => value !== null);
@@ -346,7 +416,7 @@ function renderProgression() {
   const visible = filtered.slice(state.page * pageSize, (state.page + 1) * pageSize);
   const columns = [...gainFields.filter(field => field.key !== state.field)];
   const activeField = gainFields.find(field => field.key === state.field);
-  return hero + `<div class="metric-grid" aria-label="Progression summary">
+  return overview + `<div class="metric-grid" aria-label="Progression summary">
     ${metric("Players with OVR gains", showNumber(allGains.filter(value => value > 0).length), "trending_up")}
     ${metric("Average OVR gain", showGain(average), "bar_chart")}
     ${metric("Biggest OVR gain", showGain(best), "military_tech")}
@@ -895,14 +965,18 @@ document.addEventListener("click", event => {
       render();
       break;
     case "page": {
-      const state = filterFor(button.dataset.scope);
+      const scope = button.dataset.scope;
+      const state = filterFor(scope);
       state.page = Math.max(0, state.page + Number(button.dataset.step));
       render();
       const matches = main.querySelector(".club-match-list");
       if (matches) {
         matches.focus({ preventScroll: true });
         matches.scrollIntoView({ block: "start" });
-      } else main.querySelector(".table-scroll")?.focus({ preventScroll: true });
+      } else {
+        const control = [...main.querySelectorAll('button[data-action="page"]')].find(item => item.dataset.scope === scope);
+        (control?.closest(".panel") ?? main).querySelector(".table-scroll")?.focus({ preventScroll: true });
+      }
       break;
     }
     case "earlier-matches":
@@ -933,6 +1007,11 @@ window.addEventListener("hashchange", () => {
   window.scrollTo(0, 0);
   main.focus({ preventScroll: true });
 });
+function refreshVisibleProgression() {
+  if (!document.hidden && getRoute().section === "progression") render(true);
+}
+document.addEventListener("visibilitychange", refreshVisibleProgression);
+window.setInterval(refreshVisibleProgression, recentProgressionRefreshMs);
 document.addEventListener("touchline-themechange", () => {
   const canvas = main.querySelector("canvas[data-points]");
   if (canvas) drawChart(canvas, JSON.parse(canvas.dataset.points));

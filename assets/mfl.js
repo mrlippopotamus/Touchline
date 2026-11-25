@@ -18,6 +18,9 @@ export const ATTRIBUTES = [
   { key: "goalkeeping", title: "Goalkeeping", short: "GK" },
 ];
 
+const progressionFields = ["overall", ...ATTRIBUTES.map(attribute => attribute.key)];
+const dayMs = 24 * 60 * 60 * 1000;
+
 export const POSITIONS = ["GK", "RB", "RWB", "CB", "LB", "LWB", "CDM", "RM", "CM", "LM", "CAM", "RW", "CF", "LW", "ST"];
 
 export function number(value) {
@@ -288,8 +291,9 @@ export async function clubMatchStats(id) {
   };
 }
 
-export async function walletProgression(address) {
-  const data = await get("/players/progressions", { ownerWalletAddress: address, interval: "ALL" });
+export async function walletProgression(address, interval = "ALL") {
+  const data = await get("/players/progressions", { ownerWalletAddress: address, interval });
+  if (data === null && interval === "24H") return {};
   if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("MFL returned an incomplete progression summary.");
   return data;
 }
@@ -304,6 +308,26 @@ export async function experienceHistory(id) {
     }))
     .filter(event => event.date !== null)
     .sort((a, b) => a.date - b.date);
+}
+
+export function recentProgressionSources(events, changes, checkedAt) {
+  const start = checkedAt - dayMs;
+  const ratings = {};
+  const sources = new Map();
+  for (const event of events) {
+    if (event.date > checkedAt) break;
+    const recent = event.date >= start && event.reason !== "INITIAL";
+    for (const field of progressionFields) {
+      const value = number(event.values[field]);
+      if (value === null) continue;
+      const previous = ratings[field];
+      ratings[field] = value;
+      if (!recent || previous === undefined || value <= previous || !(number(changes[field]) > 0)) continue;
+      if (!sources.has(event.reason)) sources.set(event.reason, new Set());
+      sources.get(event.reason).add(field);
+    }
+  }
+  return [...sources].map(([reason, fields]) => ({ reason, fields: [...fields] }));
 }
 
 export async function matchPage(id, cursor) {
