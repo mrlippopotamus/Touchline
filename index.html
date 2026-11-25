@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d110e">
+  <meta name="description" content="Explore MFL players, club rosters and player progression from a Flow wallet.">
+  <title>Touchline — MFL Wallet Explorer</title>
+  <link rel="icon" href="assets/touchline.png" type="image/png">
+  <script src="assets/theme.js"></script>
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#/players" aria-label="Touchline home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Touchline<small>MFL Wallet Explorer</small></span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <a href="#/players" data-nav="players"><span class="icon" aria-hidden="true">groups</span>Players</a>
+        <a href="#/clubs" data-nav="clubs"><span class="icon" aria-hidden="true">shield</span>Clubs</a>
+        <a href="#/progression" data-nav="progression"><span class="icon" aria-hidden="true">show_chart</span>Progression</a>
+        <a href="results/#matches"><span class="icon" aria-hidden="true">sports_soccer</span>Results</a>
+      </nav>
+      <div class="header-utilities">
+        <button class="icon-button theme-toggle" type="button" data-theme-toggle aria-label="Use light theme" title="Use light theme">
+          <span aria-hidden="true">☀︎</span>
+        </button>
+        <button id="wallet-button" class="button header-wallet" type="button" data-action="wallet">
+          <span class="icon" aria-hidden="true">account_balance_wallet</span><span>Connect wallet</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main-content" tabindex="-1"></main>
+
+  <footer class="site-footer">
+    <div class="footer-inner"><strong>Touchline</strong><span>MFL game data on Flow</span></div>
+  </footer>
+
+  <dialog class="wallet-dialog" id="wallet-dialog" aria-labelledby="wallet-title">
+    <div class="dialog-heading">
+      <span class="dialog-icon icon" aria-hidden="true">account_balance_wallet</span>
+      <button class="icon-button" type="button" data-action="close-wallet" aria-label="Close wallet settings"><span class="icon" aria-hidden="true">close</span></button>
+    </div>
+    <h2 id="wallet-title">Choose a wallet</h2>
+    <p class="muted">Connect your Flow wallet or enter a public wallet address to see its MFL data.</p>
+    <p class="connection-info" id="connection-info" hidden></p>
+    <button class="button primary wallet-connect" id="connect-flow" type="button" data-action="connect"><span class="icon" aria-hidden="true">account_balance_wallet</span>Connect Flow wallet</button>
+    <button class="button wallet-connect" id="disconnect-flow" type="button" data-action="disconnect" hidden>Disconnect Flow wallet</button>
+    <div class="dialog-divider"><span>View by address</span></div>
+    <form id="wallet-form" novalidate>
+      <label for="wallet-address">Flow wallet address</label>
+      <div class="wallet-form-row">
+        <input id="wallet-address" name="wallet" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="0x…" aria-describedby="wallet-error">
+        <button class="button" type="submit">View wallet</button>
+      </div>
+    </form>
+    <p class="form-error" id="wallet-error" role="alert" hidden></p>
+    <button class="text-button sample-button" type="button" data-action="sample">Browse sample wallet</button>
+  </dialog>
+  <div id="announcement" class="visually-hidden" aria-live="polite"></div>
+</body>
+</html>
