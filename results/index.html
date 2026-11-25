@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d110e">
+  <meta name="description" content="MFL match history and formation analysis in Touchline.">
+  <title>Results · Touchline</title>
+  <link rel="icon" href="../assets/touchline.png" type="image/png">
+  <script src="../assets/theme.js"></script>
+  <link rel="stylesheet" href="../assets/styles.css">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body class="results-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="../#/players" aria-label="Touchline home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Touchline<small>MFL Wallet Explorer</small></span>
+      </a>
+      <nav class="main-nav" aria-label="Main navigation">
+        <a href="../#/players" data-nav="players"><span class="icon" aria-hidden="true">groups</span>Players</a>
+        <a href="../#/clubs" data-nav="clubs"><span class="icon" aria-hidden="true">shield</span>Clubs</a>
+        <a href="../#/progression" data-nav="progression"><span class="icon" aria-hidden="true">show_chart</span>Progression</a>
+        <a href="./#matches" aria-current="page"><span class="icon" aria-hidden="true">sports_soccer</span>Results</a>
+      </nav>
+      <div class="header-utilities">
+        <button class="icon-button theme-toggle" type="button" data-theme-toggle aria-label="Use light theme" title="Use light theme">
+          <span aria-hidden="true">☀︎</span>
+        </button>
+        <a class="button header-wallet" href="../?wallet=settings#/players">
+          <span class="icon" aria-hidden="true">account_balance_wallet</span><span>Connect wallet</span>
+        </a>
+      </div>
+    </div>
+  </header>
+  <main id="main" class="main-content" tabindex="-1">
+    <section class="hero" aria-labelledby="results-title">
+      <div class="hero-content">
+        <h1 id="results-title">Results</h1>
+        <p>Match history and formation analysis for four tracked MFL clubs.</p>
+        <div class="wallet-strip">
+          <span class="wallet-pill" id="sync-status" role="status">Loading match check status</span>
+          <button class="text-button hero-link" type="button" id="sync-button" data-action="sync">Check now</button>
+        </div>
+      </div>
+    </section>
+    <div class="results-toolbar">
+      <nav id="nav" class="section-nav" aria-label="Results views">
+        <a href="#matrix" data-view="matrix">Counter matrix</a>
+        <a href="#picker" data-view="picker">Formation picker</a>
+        <a href="#matchups" data-view="matchups">Matchups</a>
+        <a href="#matches" data-view="matches">Matches</a>
+      </nav>
+      <div class="results-actions">
+        <a class="button" href="export/">Downloads</a>
+        <button class="button primary" type="button" data-action="import">Import matches</button>
+      </div>
+    </div>
+    <div id="app"><p class="loading" role="status">Loading the match database…</p></div>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner"><strong>Touchline</strong><span>MFL game data on Flow</span></div>
+  </footer>
+  <dialog class="results-dialog" id="dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
