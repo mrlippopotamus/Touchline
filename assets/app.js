@@ -1,8 +1,8 @@
 import {
-  ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, club, clubPlayers,
+  ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, SCOUTING_PAGE_SIZE, club, clubPlayers,
   clubMatches, clubMatchStats, clubPlayerGains, clubProgressionHistories, clubTrainingCoaches,
   experienceHistory, matchPage, normaliseAddress, number, player, readable,
-  recentProgressionSources, walletClubs, walletPlayers, walletProgression,
+  recentProgressionSources, scoutingBatch, walletClubs, walletPlayers, walletProgression,
 } from "./mfl.js";
 import { connectWallet, disconnectWallet, watchWallet } from "./wallet.js";
 
@@ -17,7 +17,7 @@ const clubMatchPageSize = 5;
 const clubMatchRefreshMs = 5 * 60 * 1000;
 const recentProgressionRefreshMs = 5 * 60 * 1000;
 const clubTrainingRefreshMs = 5 * 60 * 1000;
-const clubSections = { results: "Results", schedule: "Upcoming matches", roster: "Roster", training: "Training" };
+const clubSections = { results: "Results", schedule: "Upcoming matches", squad: "Squad", training: "Training" };
 const numberFormat = new Intl.NumberFormat();
 const xgFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const percentFormat = new Intl.NumberFormat(undefined, { style: "percent" });
@@ -29,6 +29,10 @@ const escapeChars = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'"
 const resources = new Map();
 const filters = new Map();
 const gainFields = [{ key: "overall", title: "Overall", short: "OVR" }, ...ATTRIBUTES];
+const scoutingPeriods = [["24H", "Last 24 hours"], ["WEEK", "Last 7 days"], ["MONTH", "Last 30 days"], ["ALL", "All time"]];
+const scoutingDefaults = { ageMin: "", ageMax: "", overallMin: "", overallMax: "", position: "", interval: "MONTH", field: "overall", minimum: "" };
+const scouting = { draft: { ...scoutingDefaults }, search: null, filterError: "" };
+const scoutingBatchesPerSearch = 5;
 let wallet = restoreChoice();
 let connectedAddress = "";
 let connecting = false;
@@ -58,9 +62,10 @@ function getRoute() {
   const [section, id, view, ...extra] = window.location.hash.replace(/^#\/?/, "").split("/");
   if (id && /^\d+$/.test(id) && !extra.length) {
     if (section === "players" && !view) return { section, id };
-    if (section === "clubs" && (!view || Object.hasOwn(clubSections, view))) return { section, id, view: view || "roster" };
+    const clubView = !view || view === "roster" ? "squad" : view;
+    if (section === "clubs" && Object.hasOwn(clubSections, clubView)) return { section, id, view: clubView };
   }
-  if (section === "clubs" || section === "progression") return { section };
+  if (section === "clubs" || section === "progression" || section === "scouting") return { section };
   return { section: "players" };
 }
 
@@ -122,8 +127,8 @@ function walletStrip() {
   </div>`;
 }
 
-function pageHero(title, description) {
-  return `<section class="hero"><div class="hero-content"><h1>${title}</h1><p>${description}</p>${walletStrip()}</div></section>`;
+function pageHero(title, description, showWallet = true) {
+  return `<section class="hero"><div class="hero-content"><h1>${title}</h1><p>${description}</p>${showWallet ? walletStrip() : ""}</div></section>`;
 }
 
 function metric(label, value, symbol, detail = "") {
@@ -285,14 +290,14 @@ function clubCard(team) {
     </div>
     <div class="club-card-actions">
       <a class="button club-matches-link" href="#/clubs/${team.id}/results" aria-label="View matches for ${esc(team.name)}">View matches</a>
-      <a class="button roster-link" href="#/clubs/${team.id}" aria-label="View roster for ${esc(team.name)}">View roster</a>
+      <a class="button roster-link" href="#/clubs/${team.id}" aria-label="View squad for ${esc(team.name)}">View squad</a>
     </div>
   </article>`;
 }
 
 function renderClubs() {
   const entry = resource("wallet-clubs:" + wallet.address, () => walletClubs(wallet.address));
-  const hero = pageHero("Clubs", "Browse owned clubs, match results, fixtures and rosters.");
+  const hero = pageHero("Clubs", "Browse owned clubs, match results, fixtures and squads.");
   if (entry.status !== "ready") return hero + `<section class="panel section-gap">${entry.status === "loading" ? loading("Loading MFL clubs") : loadError(entry, "Clubs couldn't be loaded")}</section>`;
   const all = entry.value;
   if (!all.length) return hero + `<section class="panel section-gap">${notice("No owned clubs", "MFL has no clubs registered to this wallet.", { symbol: "shield" })}</section>`;
@@ -314,6 +319,142 @@ function renderClubs() {
 
 function getGain(changes, field) {
   return changes && typeof changes === "object" ? number(changes[field]) ?? 0 : null;
+}
+
+function startScoutingSearch() {
+  scouting.search?.request?.abort();
+  scouting.filterError = "";
+  scouting.search = {
+    criteria: { ...scouting.draft }, pages: [{ rows: [], error: "" }], page: 0,
+    cursor: "", more: true, carry: [], checked: 0, request: null,
+  };
+  void fillScoutingPage(scouting.search);
+}
+
+async function fillScoutingPage(search) {
+  if (search.request || !search.more) return;
+  const request = new AbortController();
+  search.request = request;
+  const page = search.pages[search.page];
+  page.error = "";
+  const { minimum, field } = search.criteria;
+
+  try {
+    // A progression filter can be sparse. Keep the cursor so the next search can resume.
+    for (let batch = 0; batch < scoutingBatchesPerSearch && page.rows.length < SCOUTING_PAGE_SIZE && search.more; batch++) {
+      const result = await scoutingBatch(search.criteria, search.cursor, request.signal);
+      if (request.signal.aborted) return;
+      search.cursor = result.cursor;
+      search.more = Boolean(result.cursor);
+      search.checked += result.rows.length;
+      const matches = minimum === "" ? result.rows : result.rows.filter(row => getGain(row.changes, field) >= Number(minimum));
+      const slots = SCOUTING_PAGE_SIZE - page.rows.length;
+      page.rows.push(...matches.slice(0, slots));
+      search.carry.push(...matches.slice(slots));
+      if (getRoute().section !== "scouting") break;
+    }
+    if (!search.more && !page.rows.length && search.page > 0) {
+      search.pages.pop();
+      search.page--;
+    }
+  } catch (error) {
+    if (!request.signal.aborted) page.error = error.message || "MFL scouting couldn’t be loaded.";
+  } finally {
+    search.request = null;
+    if (scouting.search === search && getRoute().section === "scouting") render(true);
+  }
+}
+
+function scoutingNumber(name, label, placeholder) {
+  return `<input id="scouting-${name}" name="${name}" type="number" min="0" step="1" inputmode="numeric" aria-label="${label}"
+    placeholder="${placeholder}" value="${esc(scouting.draft[name])}">`;
+}
+
+function scoutingSelect(name, label, options) {
+  return `<label class="scouting-field"><span>${label}</span><span class="select-box">
+    <select id="scouting-${name}" name="${name}">${options.map(([key, title]) =>
+      `<option value="${esc(key)}"${key === scouting.draft[name] ? " selected" : ""}>${esc(title)}</option>`).join("")}</select>
+    ${icon("expand_more")}</span></label>`;
+}
+
+function scoutingFilters() {
+  return `<form class="panel scouting-filters section-gap" id="scouting-filters" aria-label="Scouting filters">
+    <div class="scouting-filter-grid">
+      <fieldset class="scouting-range"><legend>Age</legend><div>
+        ${scoutingNumber("ageMin", "Minimum age", "Min")}${scoutingNumber("ageMax", "Maximum age", "Max")}
+      </div></fieldset>
+      <fieldset class="scouting-range"><legend>OVR</legend><div>
+        ${scoutingNumber("overallMin", "Minimum OVR", "Min")}${scoutingNumber("overallMax", "Maximum OVR", "Max")}
+      </div></fieldset>
+      ${scoutingSelect("position", "Position", [["", "All positions"], ...POSITIONS.map(pos => [pos, pos])])}
+      ${scoutingSelect("interval", "Progression period", scoutingPeriods)}
+      ${scoutingSelect("field", "Progression attribute", gainFields.map(({ key, short, title }) => [key, key === "overall" ? short : title]))}
+      <label class="scouting-field"><span>Minimum gain</span>${scoutingNumber("minimum", "Minimum rating points gained", "Any")}</label>
+    </div>
+    ${scouting.filterError ? `<p class="form-error" role="alert">${esc(scouting.filterError)}</p>` : ""}
+    <div class="scouting-actions">
+      <button id="scouting-apply" class="button primary" type="submit">Apply filters</button>
+      <button class="button" type="button" data-action="scouting-reset">Reset</button>
+    </div>
+  </form>`;
+}
+
+function scoutingTable(rows, field) {
+  const columns = [gainFields[0], ...ATTRIBUTES.filter(attribute => attribute.key === field)];
+  return `<div class="table-scroll" tabindex="0" aria-label="Scouting player results">
+    <table class="data-table scouting-table">
+      <caption class="visually-hidden">Players and rating changes in the selected period</caption>
+      <thead><tr><th scope="col">Player</th><th scope="col">Position</th><th scope="col" class="stat-col">Age</th><th scope="col" class="stat-col">OVR</th>
+        ${columns.map(column => `<th scope="col" class="stat-col" title="${column.title} change">Δ ${column.short}</th>`).join("")}
+      </tr></thead>
+      <tbody>${rows.map(({ person, changes }) => `<tr><td>${playerName(person)}</td><td>${positions(person)}</td>
+        <td class="stat-col">${showNumber(person.age)}</td><td class="stat-col">${rating(person.overall)}</td>
+        ${columns.map(({ key }) => `<td class="stat-col">${showGain(getGain(changes, key))}</td>`).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
+function renderScouting() {
+  if (!scouting.search) startScoutingSearch();
+  const search = scouting.search;
+  const { rows, error } = search.pages[search.page];
+  const period = scoutingPeriods.find(([key]) => key === search.criteria.interval)[1];
+  const busy = Boolean(search.request);
+  const onLastPage = search.page === search.pages.length - 1;
+  const canContinue = onLastPage && search.more && rows.length < SCOUTING_PAGE_SIZE;
+  const hasNext = !onLastPage || (rows.length === SCOUTING_PAGE_SIZE && (search.more || search.carry.length > 0));
+  const status = busy ? "Checking players and their progression…" : error || (canContinue ? `${showNumber(search.checked)} players checked so far.` : "");
+  const body = rows.length ? scoutingTable(rows, search.criteria.field) :
+    busy ? loading("Loading scouting results") : !status ? notice("No matching players", "Try changing the scouting filters.", { symbol: "search" }) : "";
+
+  return pageHero("Player scouting", "Search MFL’s player database and compare rating changes.", false) + scoutingFilters() +
+    `<section class="panel" id="scouting-results" tabindex="-1" aria-labelledby="scouting-results-title" aria-busy="${busy}">
+      <div class="panel-heading"><div><h2 id="scouting-results-title">Scouting results</h2>
+        <p class="heading-meta" role="status">${rows.length ? `${showNumber(rows.length)} ${rows.length === 1 ? "player" : "players"} · ` : ""}${period}</p></div></div>
+      ${body}
+      ${status ? `<div class="scouting-status"><p role="status">${esc(status)}</p>
+        ${!busy && (error || canContinue) ? `<button class="button" type="button" data-action="scouting-continue">${error ? "Try again" : "Continue search"}</button>` : ""}</div>` : ""}
+      ${rows.length || search.page > 0 ? `<div class="table-footer">
+        <span>Page ${showNumber(search.page + 1)}</span>
+        <div class="page-actions">
+          <button class="button" type="button" data-action="scouting-page" data-step="-1"${busy || !search.page ? " disabled" : ""}>Previous</button>
+          <button class="button" type="button" data-action="scouting-page" data-step="1"${busy || !hasNext ? " disabled" : ""}>Next 50</button>
+        </div></div>` : ""}
+    </section>`;
+}
+
+function changeScoutingPage(step) {
+  const search = scouting.search;
+  if (search.request) return;
+  search.page += step;
+  if (search.page === search.pages.length) {
+    search.pages.push({ rows: search.carry.splice(0), error: "" });
+    void fillScoutingPage(search);
+  }
+  render(true);
+  const results = document.getElementById("scouting-results");
+  results.focus({ preventScroll: true });
+  results.scrollIntoView({ block: "start" });
 }
 
 function gainBars(rows, field) {
@@ -458,7 +599,7 @@ function breadcrumb(label, destination, current) {
 function clubNavigation(id, active) {
   return `<nav class="club-navigation section-nav" aria-label="Club sections">
     ${Object.entries(clubSections).map(([view, label]) => {
-      const path = "#/clubs/" + id + (view === "roster" ? "" : "/" + view);
+      const path = "#/clubs/" + id + (view === "squad" ? "" : "/" + view);
       return `<a href="${path}"${view === active ? ' aria-current="page"' : ""}>${label}</a>`;
     }).join("")}
   </nav>`;
@@ -607,6 +748,7 @@ function clubProgressionPanel(id) {
   const state = filterFor(scope);
   const days = state.days ?? "30";
   const source = state.source ?? "TRAINING";
+  const direction = state.direction ?? "descending";
   const heading = `<div class="panel-heading"><div><h2 id="club-progression-title">Squad progression</h2>
     ${entry.value?.length ? `<p class="heading-meta">${showNumber(entry.value.length)} players · Rating points gained</p>` : ""}</div>
     ${entry.value?.length ? `<div class="filters">
@@ -617,17 +759,26 @@ function clubProgressionPanel(id) {
   let body;
   if (entry.status === "loading") body = loading("Loading the squad's progression history");
   else if (entry.status === "error") body = loadError(entry, "Squad progression couldn't be loaded");
-  else if (!entry.value.length) body = notice("No players found", "MFL lists no players in this club’s roster.", { symbol: "groups" });
+  else if (!entry.value.length) body = notice("No players found", "MFL lists no players in this club’s squad.", { symbol: "groups" });
   else {
     const rows = entry.value.map(({ person, events }) => ({
       person, gains: clubPlayerGains(events, person.contractCreatedAt, Number(days), entry.loadedAt, source),
     }));
-    rows.sort((a, b) => (b.gains?.[state.field] ?? -1) - (a.gains?.[state.field] ?? -1) || sortByRating(a.person, b.person));
+    rows.sort((a, b) => {
+      const first = a.gains?.[state.field];
+      const second = b.gains?.[state.field];
+      const missing = Number(first == null) - Number(second == null);
+      const difference = (first ?? 0) - (second ?? 0);
+      return missing || (direction === "ascending" ? difference : -difference) || sortByRating(a.person, b.person);
+    });
     body = `<div class="table-scroll" tabindex="0" aria-label="Squad rating gains">
       <table class="data-table club-progression-table">
         <caption class="visually-hidden">Rating points gained by the current squad in the selected period and source</caption>
         <thead><tr><th scope="col" class="training-player-col">Player</th>
-          ${gainFields.map(field => `<th scope="col" class="stat-col" title="${field.title} gains"${field.key === state.field ? ' aria-sort="descending"' : ""}>Δ ${field.short}</th>`).join("")}
+          ${gainFields.map(field => `<th scope="col" class="stat-col"${field.key === state.field ? ` aria-sort="${direction}"` : ""}>
+            <button id="training-sort-${field.key}" class="training-sort-button" type="button" data-action="sort-training"
+              data-scope="${scope}" data-field="${field.key}" aria-label="Sort by ${field.title} gains">Δ ${field.short}</button>
+            <span class="training-sort-indicator" aria-hidden="true"></span></th>`).join("")}
         </tr></thead>
         <tbody>${rows.map(({ person, gains }) => `<tr><td class="training-player-col">${playerName(person)}</td>
           ${gains ? gainFields.map(field => `<td class="stat-col">${showGain(gains[field.key] ?? null)}</td>`).join("") :
@@ -643,7 +794,7 @@ function clubProgressionPanel(id) {
 function renderClub(id, view) {
   const savedTeams = resources.get("wallet-clubs:" + wallet.address)?.value;
   const known = savedTeams?.find(team => team.id === id);
-  const detail = known && (view === "roster" || view === "training" || known.squadIds.length)
+  const detail = known && (view === "squad" || view === "training" || known.squadIds.length)
     ? { status: "ready", value: known } : resource("club:" + id, () => club(id));
   const team = detail.value || known;
   const title = team?.name || "Club " + id;
@@ -659,11 +810,11 @@ function renderClub(id, view) {
     const body = detail.status === "error" ? loadError(detail, "Club details couldn't be loaded") : loading("Loading club details");
     return header + `<section class="panel">${body}</section>`;
   }
-  if (view !== "roster") return header + clubMatchPanel(id, view, detail);
+  if (view !== "squad") return header + clubMatchPanel(id, view, detail);
   const roster = resource("club-roster:" + id, () => clubPlayers(id));
   return header + (detail.status === "error" ? `<div class="panel section-gap">${loadError(detail, "Club details couldn't be loaded")}</div>` : "") +
-    `<div class="club-roster">${roster.status === "ready" ? playerList(roster.value, "club-" + id, "Club roster", "MFL lists no players in this club’s roster.") :
-      `<section class="panel">${roster.status === "loading" ? loading("Loading club roster") : loadError(roster, "Roster couldn't be loaded")}</section>`}
+    `<div class="club-roster">${roster.status === "ready" ? playerList(roster.value, "club-" + id, "Club squad", "MFL lists no players in this club’s squad.") :
+      `<section class="panel">${roster.status === "loading" ? loading("Loading club squad") : loadError(roster, "Squad couldn't be loaded")}</section>`}
     </div>`;
 }
 
@@ -907,6 +1058,7 @@ function render(preserveFocus = false) {
   let view;
   if (page.section === "clubs") view = page.id ? renderClub(page.id, page.view) : renderClubs();
   else if (page.section === "progression") view = renderProgression();
+  else if (page.section === "scouting") view = renderScouting();
   else view = page.id ? renderPlayer(page.id) : renderPlayers();
   chartObserver?.disconnect();
   main.innerHTML = view;
@@ -934,9 +1086,14 @@ function render(preserveFocus = false) {
 }
 
 function changeFilter(event) {
+  if (event.target.form?.id === "scouting-filters") {
+    scouting.draft[event.target.name] = event.target.value;
+    return;
+  }
   if (!event.target.matches("[data-filter]")) return;
   const state = filterFor(event.target.dataset.scope);
   state[event.target.dataset.filter] = event.target.value;
+  if (event.target.id === "training-sort") state.direction = "descending";
   state.page = 0;
   render(true);
 }
@@ -1054,6 +1211,17 @@ document.addEventListener("click", event => {
       resources.delete(button.dataset.key);
       render();
       break;
+    case "sort-training": {
+      const state = filterFor(button.dataset.scope);
+      const field = button.dataset.field;
+      const scrollLeft = button.closest(".table-scroll").scrollLeft;
+      state.direction = field === state.field && state.direction !== "ascending" ? "ascending" : "descending";
+      state.field = field;
+      render(true);
+      const scroller = document.getElementById(button.id)?.closest(".table-scroll");
+      if (scroller) scroller.scrollLeft = scrollLeft;
+      break;
+    }
     case "page": {
       const scope = button.dataset.scope;
       const state = filterFor(scope);
@@ -1072,10 +1240,34 @@ document.addEventListener("click", event => {
     case "earlier-matches":
       loadEarlierMatches(button.dataset.id);
       break;
+    case "scouting-reset":
+      scouting.draft = { ...scoutingDefaults };
+      startScoutingSearch();
+      render(true);
+      break;
+    case "scouting-continue":
+      void fillScoutingPage(scouting.search);
+      render(true);
+      break;
+    case "scouting-page":
+      changeScoutingPage(Number(button.dataset.step));
+      break;
   }
 });
 main.addEventListener("input", event => { if (event.target.tagName === "INPUT") changeFilter(event); });
 main.addEventListener("change", event => { if (event.target.tagName === "SELECT") changeFilter(event); });
+main.addEventListener("submit", event => {
+  if (event.target.id !== "scouting-filters") return;
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(event.target));
+  scouting.draft = values;
+  if (values.ageMin && values.ageMax && Number(values.ageMin) > Number(values.ageMax)) {
+    scouting.filterError = "Minimum age must be at or below maximum age.";
+  } else if (values.overallMin && values.overallMax && Number(values.overallMin) > Number(values.overallMax)) {
+    scouting.filterError = "Minimum OVR must be at or below maximum OVR.";
+  } else startScoutingSearch();
+  render(true);
+});
 main.addEventListener("error", event => { if (event.target.tagName === "IMG") event.target.hidden = true; }, true);
 document.getElementById("wallet-form").addEventListener("submit", event => {
   event.preventDefault();

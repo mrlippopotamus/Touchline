@@ -4,6 +4,7 @@ const PLAYER_PAGE_SIZE = 500;
 const CLUB_MATCH_LIMIT = 50;
 const CLUB_HISTORY_PAGE_SIZE = 100;
 export const MATCH_PAGE_SIZE = 25;
+export const SCOUTING_PAGE_SIZE = 50;
 
 // A public example used in the mfl-data repository's dataset documentation.
 export const SAMPLE_WALLET = "0x55e8be2966409ed4";
@@ -126,14 +127,16 @@ function dateValue(value) {
 
 let retryAt = 0;
 
-async function get(path, params) {
+async function get(path, params, signal) {
+  if (signal?.aborted) throw signal.reason;
   if (Date.now() < retryAt) throw new Error("MFL is limiting requests. Try again shortly.");
   const query = params ? "?" + new URLSearchParams(params) : "";
   let response;
   try {
+    const timeout = AbortSignal.timeout(18000);
     response = await fetch(API + path + query, {
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(18000),
+      signal: signal && AbortSignal.any ? AbortSignal.any([signal, timeout]) : timeout,
       credentials: "omit",
     });
   } catch (error) {
@@ -150,6 +153,42 @@ async function get(path, params) {
     throw Object.assign(new Error(message), { status: response.status });
   }
   return response.json();
+}
+
+export async function scoutingBatch(filters, cursor, signal) {
+  const params = { limit: SCOUTING_PAGE_SIZE };
+  for (const key of ["ageMin", "ageMax", "overallMin", "overallMax"]) {
+    if (filters[key] != null && filters[key] !== "") params[key] = Number(filters[key]);
+  }
+  if (filters.position) params.positions = filters.position;
+  if (cursor) params.beforePlayerId = cursor;
+  const players = list(await get("/players", params, signal), "items", "players", "data", "value").map(toPlayer);
+  if (!players.length) return { rows: [], cursor: "" };
+  if (players.length > SCOUTING_PAGE_SIZE) throw new Error("MFL returned an invalid player page. Try again.");
+
+  let previousId = cursor ? Number(cursor) : Infinity;
+  for (const player of players) {
+    const id = Number(player?.id);
+    if (!Number.isSafeInteger(id) || id >= previousId) {
+      throw new Error("MFL returned an invalid player page. Try again.");
+    }
+    previousId = id;
+  }
+  const progressions = await get("/players/progressions", {
+    playersIds: players.map(player => player.id).join(","),
+    interval: filters.interval,
+  }, signal);
+  if (!progressions || typeof progressions !== "object" || Array.isArray(progressions)) {
+    throw new Error("MFL returned an incomplete progression batch. Try again.");
+  }
+  const rows = players.map(person => {
+    const changes = progressions[person.id];
+    if (changes !== null && (!changes || typeof changes !== "object" || Array.isArray(changes))) {
+      throw new Error("MFL returned an incomplete progression batch. Try again.");
+    }
+    return { person, changes: changes ?? {} };
+  });
+  return { rows, cursor: rows.length === SCOUTING_PAGE_SIZE ? players.at(-1).id : "" };
 }
 
 export async function walletPlayers(wallet) {

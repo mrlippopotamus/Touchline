@@ -196,6 +196,21 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 .select-box select:hover { border-color: var(--button-hover-line); }
 .select-box select option { background: var(--panel); }
 
+.scouting-filters { padding: 16px 19px; }
+.scouting-filter-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 154px), 1fr)); gap: 12px 14px;
+  align-items: end;
+}
+.scouting-field { display: grid; gap: 5px; min-width: 0; }
+.scouting-range { border: 0; padding: 0; margin: 0; min-width: 0; }
+.scouting-range legend { padding: 0; margin-bottom: 5px; }
+.scouting-range > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.scouting-field > span:first-child, .scouting-range legend { font-size: .875rem; font-weight: 650; color: var(--muted); }
+.scouting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.scouting-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 19px; color: var(--muted); font-size: .875rem; }
+.scouting-table .position-tags .secondary-position { display: inline-flex; }
+#scouting-results { scroll-margin-top: 12px; }
+
 .table-scroll { overflow-x: auto; }
 .data-table { border-collapse: collapse; width: 100%; text-align: left; }
 .data-table thead th {
@@ -350,6 +365,18 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 .club-progression-table tbody tr:hover .training-player-col { background: var(--panel-hover); }
 .club-progression-table td.stat-col { color: var(--muted); }
 .club-progression-table [aria-sort] { color: var(--lime-text); }
+.club-progression-table thead .stat-col { padding-block: 4px; }
+.training-sort-button {
+  min-height: 28px; padding: 3px 2px; border: 0; border-radius: 4px;
+  background: transparent; color: inherit; font: inherit; letter-spacing: inherit; white-space: nowrap;
+}
+.training-sort-button:hover { color: var(--lime-text); text-decoration: underline; text-underline-offset: 3px; }
+.training-sort-indicator {
+  display: inline-block; visibility: hidden; margin-inline-start: 2px;
+  border: 4px solid transparent; border-top-color: currentColor; transform: translateY(2px);
+}
+[aria-sort] .training-sort-indicator { visibility: visible; }
+[aria-sort="ascending"] .training-sort-indicator { transform: translateY(-2px) rotate(180deg); }
 .training-note {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px;
   padding: 11px 19px; border-top: 1px solid var(--line); font-size: .875rem; color: var(--muted);
@@ -472,6 +499,7 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
   .metric .metric-value { font-size: 1.55rem; padding-top: 2px; }
   .metric .metric-icon, .metric .metric-detail { display: none; }
   .panel-heading { padding: 14px 12px; min-height: auto; }
+  .scouting-filters, .scouting-status { padding-inline: 12px; }
   .panel-heading .filters { width: 100%; }
   .filters .search-box { flex: 1; min-width: 112px; }
   .search-box input { width: 100%; }
@@ -516,6 +544,7 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 }
 @media (max-width: 380px) {
   .brand small { display: none; }
+  .main-nav a { padding-inline: 3px; font-size: .82rem; }
   .header-utilities { gap: 6px; }
   .club-grid { grid-template-columns: 1fr; }
   .wallet-strip { gap: 7px; }
