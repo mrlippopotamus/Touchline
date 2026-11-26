@@ -1,5 +1,5 @@
 import {
-  ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, SCOUTING_PAGE_SIZE, club, clubPlayers,
+  ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, SCOUTING_PAGE_SIZE, SCOUTING_RANGES, club, clubPlayers,
   clubMatches, clubMatchStats, clubPlayerGains, clubProgressionHistories, clubTrainingCoaches,
   experienceHistory, matchPage, normaliseAddress, number, player, readable,
   recentProgressionSources, scoutingBatch, walletClubs, walletPlayers, walletProgression,
@@ -30,9 +30,14 @@ const resources = new Map();
 const filters = new Map();
 const gainFields = [{ key: "overall", title: "Overall", short: "OVR" }, ...ATTRIBUTES];
 const scoutingPeriods = [["24H", "Last 24 hours"], ["WEEK", "Last 7 days"], ["MONTH", "Last 30 days"], ["ALL", "All time"]];
-const scoutingDefaults = { ageMin: "", ageMax: "", overallMin: "", overallMax: "", position: "", interval: "MONTH", field: "overall", minimum: "" };
-const scouting = { draft: { ...scoutingDefaults }, search: null, filterError: "" };
+const scoutingDefaults = { position: "", interval: "MONTH", field: "overall", minimum: "" };
+const scouting = { draft: { ...scoutingDefaults }, search: null, order: null, filterError: "" };
 const scoutingBatchesPerSearch = 5;
+const scoutingPlayerColumns = [
+  { key: "name", short: "Player", title: "Player surname", remoteField: "lastName" },
+  { key: "position", short: "Position", title: "Primary position" },
+  ...SCOUTING_RANGES.map(field => ({ ...field, remoteField: field.key })),
+];
 let wallet = restoreChoice();
 let connectedAddress = "";
 let connecting = false;
@@ -321,11 +326,13 @@ function getGain(changes, field) {
   return changes && typeof changes === "object" ? number(changes[field]) ?? 0 : null;
 }
 
-function startScoutingSearch() {
+function startScoutingSearch(criteria = scouting.draft) {
   scouting.search?.request?.abort();
-  scouting.filterError = "";
+  const order = scouting.order;
+  if (order?.change && order.change !== "overall" && order.change !== criteria.field) scouting.order = null;
   scouting.search = {
-    criteria: { ...scouting.draft }, pages: [{ rows: [], error: "" }], page: 0,
+    criteria: { ...criteria }, order: order?.remoteField ? order : null, seen: new Set(),
+    pages: [{ rows: [], error: "" }], page: 0,
     cursor: "", more: true, carry: [], checked: 0, request: null,
   };
   void fillScoutingPage(scouting.search);
@@ -342,12 +349,14 @@ async function fillScoutingPage(search) {
   try {
     // A progression filter can be sparse. Keep the cursor so the next search can resume.
     for (let batch = 0; batch < scoutingBatchesPerSearch && page.rows.length < SCOUTING_PAGE_SIZE && search.more; batch++) {
-      const result = await scoutingBatch(search.criteria, search.cursor, request.signal);
+      const result = await scoutingBatch(search.criteria, search.cursor, request.signal, search.order);
       if (request.signal.aborted) return;
       search.cursor = result.cursor;
       search.more = Boolean(result.cursor);
-      search.checked += result.rows.length;
-      const matches = minimum === "" ? result.rows : result.rows.filter(row => getGain(row.changes, field) >= Number(minimum));
+      const players = result.rows.filter(({ person }) => !search.seen.has(person.id));
+      for (const { person } of players) search.seen.add(person.id);
+      search.checked += players.length;
+      const matches = minimum === "" ? players : players.filter(row => getGain(row.changes, field) >= Number(minimum));
       const slots = SCOUTING_PAGE_SIZE - page.rows.length;
       page.rows.push(...matches.slice(0, slots));
       search.carry.push(...matches.slice(slots));
@@ -370,6 +379,13 @@ function scoutingNumber(name, label, placeholder) {
     placeholder="${placeholder}" value="${esc(scouting.draft[name])}">`;
 }
 
+function scoutingRange({ key, title }) {
+  const label = key === "overall" ? title : title.toLowerCase();
+  return `<fieldset class="scouting-range"><legend>${title}</legend><div>
+    ${scoutingNumber(key + "Min", "Minimum " + label, "Min")}${scoutingNumber(key + "Max", "Maximum " + label, "Max")}
+  </div></fieldset>`;
+}
+
 function scoutingSelect(name, label, options) {
   return `<label class="scouting-field"><span>${label}</span><span class="select-box">
     <select id="scouting-${name}" name="${name}">${options.map(([key, title]) =>
@@ -380,17 +396,13 @@ function scoutingSelect(name, label, options) {
 function scoutingFilters() {
   return `<form class="panel scouting-filters section-gap" id="scouting-filters" aria-label="Scouting filters">
     <div class="scouting-filter-grid">
-      <fieldset class="scouting-range"><legend>Age</legend><div>
-        ${scoutingNumber("ageMin", "Minimum age", "Min")}${scoutingNumber("ageMax", "Maximum age", "Max")}
-      </div></fieldset>
-      <fieldset class="scouting-range"><legend>OVR</legend><div>
-        ${scoutingNumber("overallMin", "Minimum OVR", "Min")}${scoutingNumber("overallMax", "Maximum OVR", "Max")}
-      </div></fieldset>
+      ${SCOUTING_RANGES.slice(0, 2).map(scoutingRange).join("")}
       ${scoutingSelect("position", "Position", [["", "All positions"], ...POSITIONS.map(pos => [pos, pos])])}
       ${scoutingSelect("interval", "Progression period", scoutingPeriods)}
       ${scoutingSelect("field", "Progression attribute", gainFields.map(({ key, short, title }) => [key, key === "overall" ? short : title]))}
       <label class="scouting-field"><span>Minimum gain</span>${scoutingNumber("minimum", "Minimum rating points gained", "Any")}</label>
     </div>
+    <div class="scouting-filter-grid scouting-attribute-grid">${ATTRIBUTES.map(scoutingRange).join("")}</div>
     ${scouting.filterError ? `<p class="form-error" role="alert">${esc(scouting.filterError)}</p>` : ""}
     <div class="scouting-actions">
       <button id="scouting-apply" class="button primary" type="submit">Apply filters</button>
@@ -399,17 +411,40 @@ function scoutingFilters() {
   </form>`;
 }
 
+function scoutingColumns(field) {
+  const changes = gainFields.filter(({ key }) => key === "overall" || key === field).map(({ key, short, title }) => ({
+    key: "change-" + key, short: "Δ " + short, title: title + " change", change: key,
+  }));
+  return [...scoutingPlayerColumns, ...changes];
+}
+
+function sortScoutingRows(rows) {
+  const order = scouting.order;
+  if (!order || order.remoteField) return rows;
+  const value = order.change ? row => getGain(row.changes, order.change) : row => row.person.positions[0] ?? null;
+  const direction = order.direction === "ascending" ? 1 : -1;
+  return [...rows].sort((first, second) => {
+    const a = value(first);
+    const b = value(second);
+    if (a == null || b == null) return Number(a == null) - Number(b == null);
+    return direction * (typeof a === "string" ? a.localeCompare(b) : a - b);
+  });
+}
+
 function scoutingTable(rows, field) {
-  const columns = [gainFields[0], ...ATTRIBUTES.filter(attribute => attribute.key === field)];
-  return `<div class="table-scroll" tabindex="0" aria-label="Scouting player results">
+  const columns = scoutingColumns(field);
+  const changesColumns = columns.filter(column => column.change);
+  const order = scouting.order;
+  return `<div class="table-scroll scouting-table-scroll" tabindex="0" aria-label="Scouting player results">
     <table class="data-table scouting-table">
       <caption class="visually-hidden">Players and rating changes in the selected period</caption>
-      <thead><tr><th scope="col">Player</th><th scope="col">Position</th><th scope="col" class="stat-col">Age</th><th scope="col" class="stat-col">OVR</th>
-        ${columns.map(column => `<th scope="col" class="stat-col" title="${column.title} change">Δ ${column.short}</th>`).join("")}
-      </tr></thead>
-      <tbody>${rows.map(({ person, changes }) => `<tr><td>${playerName(person)}</td><td>${positions(person)}</td>
+      <thead><tr>${columns.map((column, index) => `<th scope="col"${index > 1 ? ' class="stat-col"' : ""}${column.key === order?.key ? ` aria-sort="${order.direction}"` : ""}>
+        <button id="scouting-sort-${column.key}" class="column-sort-button" type="button" data-action="scouting-sort" data-field="${column.key}"
+          aria-label="Sort by ${column.title} ${column.remoteField ? "across results" : "on this page"}">${column.short}</button><span class="column-sort-indicator" aria-hidden="true"></span></th>`).join("")}</tr></thead>
+      <tbody>${sortScoutingRows(rows).map(({ person, changes }) => `<tr><td>${playerName(person)}</td><td>${positions(person)}</td>
         <td class="stat-col">${showNumber(person.age)}</td><td class="stat-col">${rating(person.overall)}</td>
-        ${columns.map(({ key }) => `<td class="stat-col">${showGain(getGain(changes, key))}</td>`).join("")}
+        ${ATTRIBUTES.map(({ key }) => `<td class="stat-col attribute-number">${showNumber(person.attributes[key])}</td>`).join("")}
+        ${changesColumns.map(({ change }) => `<td class="stat-col">${showGain(getGain(changes, change))}</td>`).join("")}
       </tr>`).join("")}</tbody>
     </table></div>`;
 }
@@ -424,13 +459,16 @@ function renderScouting() {
   const canContinue = onLastPage && search.more && rows.length < SCOUTING_PAGE_SIZE;
   const hasNext = !onLastPage || (rows.length === SCOUTING_PAGE_SIZE && (search.more || search.carry.length > 0));
   const status = busy ? "Checking players and their progression…" : error || (canContinue ? `${showNumber(search.checked)} players checked so far.` : "");
-  const body = rows.length ? scoutingTable(rows, search.criteria.field) :
-    busy ? loading("Loading scouting results") : !status ? notice("No matching players", "Try changing the scouting filters.", { symbol: "search" }) : "";
+  const order = scouting.order;
+  const table = rows.length || busy ? scoutingTable(rows, search.criteria.field) : "";
+  const body = table + (busy && !rows.length ? loading("Loading scouting results") :
+    !table && !status ? notice("No matching players", "Try changing the scouting filters.", { symbol: "search" }) : "");
 
   return pageHero("Player scouting", "Search MFL’s player database and compare rating changes.", false) + scoutingFilters() +
     `<section class="panel" id="scouting-results" tabindex="-1" aria-labelledby="scouting-results-title" aria-busy="${busy}">
       <div class="panel-heading"><div><h2 id="scouting-results-title">Scouting results</h2>
-        <p class="heading-meta" role="status">${rows.length ? `${showNumber(rows.length)} ${rows.length === 1 ? "player" : "players"} · ` : ""}${period}</p></div></div>
+        <p class="heading-meta" role="status">${rows.length ? `${showNumber(rows.length)} ${rows.length === 1 ? "player" : "players"} · ` : ""}${period}</p></div>
+        ${order ? `<p class="heading-meta" role="status">${order.title} · ${order.remoteField ? "All results" : "This page"}</p>` : ""}</div>
       ${body}
       ${status ? `<div class="scouting-status"><p role="status">${esc(status)}</p>
         ${!busy && (error || canContinue) ? `<button class="button" type="button" data-action="scouting-continue">${error ? "Try again" : "Continue search"}</button>` : ""}</div>` : ""}
@@ -455,6 +493,18 @@ function changeScoutingPage(step) {
   const results = document.getElementById("scouting-results");
   results.focus({ preventScroll: true });
   results.scrollIntoView({ block: "start" });
+}
+
+function changeScoutingOrder(key) {
+  const criteria = scouting.search.criteria;
+  const column = scoutingColumns(criteria.field).find(candidate => candidate.key === key);
+  if (!column) return;
+  const current = scouting.order;
+  const firstDirection = ["name", "position", "age"].includes(key) ? "ascending" : "descending";
+  const direction = current?.key === key ? (current.direction === "ascending" ? "descending" : "ascending") : firstDirection;
+  scouting.order = { ...column, direction };
+  if (column.remoteField) startScoutingSearch(criteria);
+  render(true);
 }
 
 function gainBars(rows, field) {
@@ -776,9 +826,9 @@ function clubProgressionPanel(id) {
         <caption class="visually-hidden">Rating points gained by the current squad in the selected period and source</caption>
         <thead><tr><th scope="col" class="training-player-col">Player</th>
           ${gainFields.map(field => `<th scope="col" class="stat-col"${field.key === state.field ? ` aria-sort="${direction}"` : ""}>
-            <button id="training-sort-${field.key}" class="training-sort-button" type="button" data-action="sort-training"
+            <button id="training-sort-${field.key}" class="column-sort-button" type="button" data-action="sort-training"
               data-scope="${scope}" data-field="${field.key}" aria-label="Sort by ${field.title} gains">Δ ${field.short}</button>
-            <span class="training-sort-indicator" aria-hidden="true"></span></th>`).join("")}
+            <span class="column-sort-indicator" aria-hidden="true"></span></th>`).join("")}
         </tr></thead>
         <tbody>${rows.map(({ person, gains }) => `<tr><td class="training-player-col">${playerName(person)}</td>
           ${gains ? gainFields.map(field => `<td class="stat-col">${showGain(gains[field.key] ?? null)}</td>`).join("") :
@@ -1050,6 +1100,7 @@ function render(preserveFocus = false) {
   const focusId = preserveFocus && main.contains(active) ? active.id : "";
   const selection = focusId && active instanceof HTMLInputElement ? [active.selectionStart, active.selectionEnd] : null;
   const openTimeline = main.querySelector(".timeline")?.open;
+  const scoutingScroll = preserveFocus ? main.querySelector(".scouting-table-scroll")?.scrollLeft : 0;
   const page = getRoute();
   for (const link of document.querySelectorAll("[data-nav]")) {
     if (link.dataset.nav === page.section) link.setAttribute("aria-current", "page");
@@ -1062,6 +1113,10 @@ function render(preserveFocus = false) {
   else view = page.id ? renderPlayer(page.id) : renderPlayers();
   chartObserver?.disconnect();
   main.innerHTML = view;
+  if (scoutingScroll) {
+    const scroller = main.querySelector(".scouting-table-scroll");
+    if (scroller) scroller.scrollLeft = scoutingScroll;
+  }
   if (openTimeline && preserveFocus) {
     const timeline = main.querySelector(".timeline");
     if (timeline) timeline.open = true;
@@ -1242,6 +1297,8 @@ document.addEventListener("click", event => {
       break;
     case "scouting-reset":
       scouting.draft = { ...scoutingDefaults };
+      scouting.order = null;
+      scouting.filterError = "";
       startScoutingSearch();
       render(true);
       break;
@@ -1252,6 +1309,9 @@ document.addEventListener("click", event => {
     case "scouting-page":
       changeScoutingPage(Number(button.dataset.step));
       break;
+    case "scouting-sort":
+      changeScoutingOrder(button.dataset.field);
+      break;
   }
 });
 main.addEventListener("input", event => { if (event.target.tagName === "INPUT") changeFilter(event); });
@@ -1261,11 +1321,18 @@ main.addEventListener("submit", event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.target));
   scouting.draft = values;
-  if (values.ageMin && values.ageMax && Number(values.ageMin) > Number(values.ageMax)) {
-    scouting.filterError = "Minimum age must be at or below maximum age.";
-  } else if (values.overallMin && values.overallMax && Number(values.overallMin) > Number(values.overallMax)) {
-    scouting.filterError = "Minimum OVR must be at or below maximum OVR.";
-  } else startScoutingSearch();
+  const invalid = SCOUTING_RANGES.find(({ key }) => {
+    const min = values[key + "Min"];
+    const max = values[key + "Max"];
+    return min !== "" && max !== "" && Number(min) > Number(max);
+  });
+  if (invalid) {
+    const label = invalid.key === "overall" ? invalid.title : invalid.title.toLowerCase();
+    scouting.filterError = `Minimum ${label} must be at or below maximum ${label}.`;
+  } else {
+    scouting.filterError = "";
+    startScoutingSearch();
+  }
   render(true);
 });
 main.addEventListener("error", event => { if (event.target.tagName === "IMG") event.target.hidden = true; }, true);

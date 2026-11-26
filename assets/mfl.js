@@ -19,6 +19,12 @@ export const ATTRIBUTES = [
   { key: "goalkeeping", title: "Goalkeeping", short: "GK" },
 ];
 
+export const SCOUTING_RANGES = [
+  { key: "age", title: "Age", short: "Age" },
+  { key: "overall", title: "OVR", short: "OVR" },
+  ...ATTRIBUTES,
+];
+
 const progressionFields = ["overall", ...ATTRIBUTES.map(attribute => attribute.key)];
 const dayMs = 24 * 60 * 60 * 1000;
 
@@ -155,23 +161,31 @@ async function get(path, params, signal) {
   return response.json();
 }
 
-export async function scoutingBatch(filters, cursor, signal) {
+export async function scoutingBatch(filters, cursor, signal, order) {
   const params = { limit: SCOUTING_PAGE_SIZE };
-  for (const key of ["ageMin", "ageMax", "overallMin", "overallMax"]) {
-    if (filters[key] != null && filters[key] !== "") params[key] = Number(filters[key]);
+  for (const { key } of SCOUTING_RANGES) {
+    for (const bound of [key + "Min", key + "Max"]) {
+      if (filters[bound] != null && filters[bound] !== "") params[bound] = Number(filters[bound]);
+    }
   }
   if (filters.position) params.positions = filters.position;
   if (cursor) params.beforePlayerId = cursor;
+  if (order) {
+    params.sorts = "metadata." + order.remoteField;
+    params.sortsOrders = order.direction === "ascending" ? "ASC" : "DESC";
+  }
   const players = list(await get("/players", params, signal), "items", "players", "data", "value").map(toPlayer);
   if (!players.length) return { rows: [], cursor: "" };
   if (players.length > SCOUTING_PAGE_SIZE) throw new Error("MFL returned an invalid player page. Try again.");
 
   let previousId = cursor ? Number(cursor) : Infinity;
+  const seen = new Set([cursor]);
   for (const player of players) {
     const id = Number(player?.id);
-    if (!Number.isSafeInteger(id) || id >= previousId) {
+    if (!Number.isSafeInteger(id) || seen.has(player.id) || (!order && id >= previousId)) {
       throw new Error("MFL returned an invalid player page. Try again.");
     }
+    seen.add(player.id);
     previousId = id;
   }
   const progressions = await get("/players/progressions", {
