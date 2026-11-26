@@ -1,6 +1,7 @@
 import {
   ATTRIBUTES, MATCH_PAGE_SIZE, POSITIONS, SAMPLE_WALLET, club, clubPlayers,
-  clubMatches, clubMatchStats, experienceHistory, matchPage, normaliseAddress, number, player, readable,
+  clubMatches, clubMatchStats, clubPlayerGains, clubProgressionHistories, clubTrainingCoaches,
+  experienceHistory, matchPage, normaliseAddress, number, player, readable,
   recentProgressionSources, walletClubs, walletPlayers, walletProgression,
 } from "./mfl.js";
 import { connectWallet, disconnectWallet, watchWallet } from "./wallet.js";
@@ -15,7 +16,8 @@ const pageSize = 18;
 const clubMatchPageSize = 5;
 const clubMatchRefreshMs = 5 * 60 * 1000;
 const recentProgressionRefreshMs = 5 * 60 * 1000;
-const clubSections = { results: "Results", schedule: "Upcoming matches", roster: "Roster" };
+const clubTrainingRefreshMs = 5 * 60 * 1000;
+const clubSections = { results: "Results", schedule: "Upcoming matches", roster: "Roster", training: "Training" };
 const numberFormat = new Intl.NumberFormat();
 const xgFormat = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const percentFormat = new Intl.NumberFormat(undefined, { style: "percent" });
@@ -555,10 +557,93 @@ function clubMatchPanel(id, view, detail) {
   return `<section class="panel club-match-panel" aria-label="${title}">${heading}${body}</section>`;
 }
 
+function coachBonuses(coach) {
+  if (coach.globalBonus > 0) {
+    const label = coach.specialties.includes("goalkeeping") ? "Goalkeeping XP" : "Training XP";
+    return `<strong class="delta">+${percentFormat.format(coach.globalBonus / 100)}</strong> ${label}`;
+  }
+  const modes = [["Primary focus", coach.primaryBonus], ["Dual focus", coach.dualBonus]];
+  const bonuses = modes.map(([label, bonus]) => {
+    const effects = ATTRIBUTES.filter(field => bonus[field.key] > 0).map(field =>
+      `<strong class="delta">+${percentFormat.format(bonus[field.key] / 100)}</strong> ${field.title}`);
+    return effects.length ? `<li><span class="muted">${label}</span> ${effects.join(", ")}</li>` : "";
+  }).filter(Boolean);
+  return bonuses.length ? `<ul class="coach-bonuses">${bonuses.join("")}</ul>` : "Base development";
+}
+
+function clubCoachesPanel(id) {
+  const entry = resource("club-coaches:" + id, () => clubTrainingCoaches(id), clubTrainingRefreshMs);
+  let body;
+  if (entry.status === "loading") body = loading("Loading MFL training coaches", 3);
+  else if (entry.status === "error") body = loadError(entry, "Training coaches couldn't be loaded");
+  else if (entry.value.status === "NOT_APPLICABLE") body = notice("Custom training unavailable", "MFL does not offer custom training for this club.");
+  else if (entry.value.status === "NOT_SET_UP") body = notice("Custom training is off", "MFL uses balanced training at normal intensity.");
+  else if (!entry.value.coaches.length) body = notice("No active coaches listed", "MFL has no active coach contracts for this club.");
+  else {
+    const tiers = ["ELITE", "STANDARD", "BASIC"];
+    const coaches = [...entry.value.coaches].sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || a.name.localeCompare(b.name));
+    body = `<div class="table-scroll" tabindex="0" aria-label="MFL training coaches">
+      <table class="data-table club-coaches-table">
+        <caption class="visually-hidden">Active MFL coach contracts and their available XP bonuses</caption>
+        <thead><tr><th scope="col">Coach</th><th scope="col">Tier</th><th scope="col">Specialties</th><th scope="col">Available XP boost</th></tr></thead>
+        <tbody>${coaches.map(coach => {
+          const specialties = coach.specialties.map(key => ATTRIBUTES.find(field => field.key === key)?.title || readable(key));
+          const tierStyle = coach.tier === "ELITE" ? "elite" : coach.tier === "STANDARD" ? "high" : "";
+          return `<tr><th scope="row">${esc(coach.name)}</th><td><span class="rating ${tierStyle}">${readable(coach.tier)}</span></td>
+            <td>${esc(specialties.join(" · ") || "Balanced")}</td><td>${coachBonuses(coach)}</td></tr>`;
+        }).join("")}</tbody>
+      </table></div>`;
+  }
+  return `<section class="panel" aria-labelledby="club-coaches-title">
+    <div class="panel-heading"><div><h2 id="club-coaches-title">Training coaches</h2>
+      <p class="heading-meta">Active coach contracts. MFL keeps group assignments and selected focus private.</p></div>
+      <a class="button" href="https://app.playmfl.com/clubs/${id}" target="_blank" rel="noopener noreferrer">View club on MFL</a>
+    </div>${body}</section>`;
+}
+
+function clubProgressionPanel(id) {
+  const scope = "club-training-progression:" + id;
+  const entry = resource(scope, () => clubProgressionHistories(id), clubTrainingRefreshMs);
+  const state = filterFor(scope);
+  const days = state.days ?? "30";
+  const source = state.source ?? "TRAINING";
+  const heading = `<div class="panel-heading"><div><h2 id="club-progression-title">Squad progression</h2>
+    ${entry.value?.length ? `<p class="heading-meta">${showNumber(entry.value.length)} players · Rating points gained</p>` : ""}</div>
+    ${entry.value?.length ? `<div class="filters">
+      ${selectBox("training-period", "Progression period", [["7", "Last 7 days"], ["30", "Last 30 days"]], days, scope, "days")}
+      ${selectBox("training-source", "Progression source", [["TRAINING", "Training"], ["MATCH", "Match"], ["", "All sources"]], source, scope, "source")}
+      ${selectBox("training-sort", "Sort by rating gain", gainFields.map(field => [field.key, "Sort by " + field.short]), state.field, scope, "field")}
+    </div>` : ""}</div>`;
+  let body;
+  if (entry.status === "loading") body = loading("Loading the squad's progression history");
+  else if (entry.status === "error") body = loadError(entry, "Squad progression couldn't be loaded");
+  else if (!entry.value.length) body = notice("No players found", "MFL lists no players in this club’s roster.", { symbol: "groups" });
+  else {
+    const rows = entry.value.map(({ person, events }) => ({
+      person, gains: clubPlayerGains(events, person.contractCreatedAt, Number(days), entry.loadedAt, source),
+    }));
+    rows.sort((a, b) => (b.gains?.[state.field] ?? -1) - (a.gains?.[state.field] ?? -1) || sortByRating(a.person, b.person));
+    body = `<div class="table-scroll" tabindex="0" aria-label="Squad rating gains">
+      <table class="data-table club-progression-table">
+        <caption class="visually-hidden">Rating points gained by the current squad in the selected period and source</caption>
+        <thead><tr><th scope="col" class="training-player-col">Player</th>
+          ${gainFields.map(field => `<th scope="col" class="stat-col" title="${field.title} gains"${field.key === state.field ? ' aria-sort="descending"' : ""}>Δ ${field.short}</th>`).join("")}
+        </tr></thead>
+        <tbody>${rows.map(({ person, gains }) => `<tr><td class="training-player-col">${playerName(person)}</td>
+          ${gains ? gainFields.map(field => `<td class="stat-col">${showGain(gains[field.key] ?? null)}</td>`).join("") :
+            `<td colspan="${gainFields.length}" class="muted">History unavailable</td>`}</tr>`).join("")}</tbody>
+      </table></div>
+      <div class="training-note"><p>For recent signings, gains start at the current contract’s recorded date when available.</p>
+        ${rows.some(row => !row.gains) ? `<button class="button" type="button" data-action="retry" data-key="${scope}">Retry histories</button>` : ""}
+      </div>`;
+  }
+  return `<section class="panel" aria-labelledby="club-progression-title">${heading}${body}</section>`;
+}
+
 function renderClub(id, view) {
   const savedTeams = resources.get("wallet-clubs:" + wallet.address)?.value;
   const known = savedTeams?.find(team => team.id === id);
-  const detail = known && (view === "roster" || known.squadIds.length)
+  const detail = known && (view === "roster" || view === "training" || known.squadIds.length)
     ? { status: "ready", value: known } : resource("club:" + id, () => club(id));
   const team = detail.value || known;
   const title = team?.name || "Club " + id;
@@ -569,6 +654,11 @@ function renderClub(id, view) {
     ${team ? `<div class="profile-picture">${clubMark(team)}</div>` : ""}
   </section>`;
   const header = hero + clubNavigation(id, view);
+  if (view === "training") {
+    if (detail.status === "ready") return header + clubCoachesPanel(id) + clubProgressionPanel(id);
+    const body = detail.status === "error" ? loadError(detail, "Club details couldn't be loaded") : loading("Loading club details");
+    return header + `<section class="panel">${body}</section>`;
+  }
   if (view !== "roster") return header + clubMatchPanel(id, view, detail);
   const roster = resource("club-roster:" + id, () => clubPlayers(id));
   return header + (detail.status === "error" ? `<div class="panel section-gap">${loadError(detail, "Club details couldn't be loaded")}</div>` : "") +

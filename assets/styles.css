@@ -342,6 +342,19 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 .club-match-note { margin-top: 5px; text-align: center; font-size: .84rem; color: var(--muted); }
 .club-match-note .text-button { margin-left: 4px; }
 
+.club-coaches-table :is(td, tbody th) { white-space: normal; overflow-wrap: anywhere; }
+.coach-bonuses { list-style: none; display: grid; gap: 3px; padding: 0; margin: 0; }
+.club-progression-table { min-width: 650px; }
+.club-progression-table .training-player-col { position: sticky; left: 0; background: var(--panel); min-width: 160px; }
+.club-progression-table thead .training-player-col { background: var(--panel-inset); }
+.club-progression-table tbody tr:hover .training-player-col { background: var(--panel-hover); }
+.club-progression-table td.stat-col { color: var(--muted); }
+.club-progression-table [aria-sort] { color: var(--lime-text); }
+.training-note {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px;
+  padding: 11px 19px; border-top: 1px solid var(--line); font-size: .875rem; color: var(--muted);
+}
+
 .bars { padding: 1px 19px 19px; display: grid; gap: 11px; }
 .bar-row { display: grid; grid-template-columns: minmax(105px, 170px) 1fr 41px; align-items: center; gap: 12px; min-height: 27px; }
 .bar-row a, .bar-row strong { font-size: .87rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -484,6 +497,7 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
   .club-match-side .club-mark { width: 34px; height: 34px; }
   .club-match-side strong { font-size: .88rem; }
   .club-match-score, .club-kickoff { min-width: 49px; gap: 4px; padding: 4px 6px; }
+  .training-note { padding-inline: 12px; }
   .profile-columns { grid-template-columns: 1fr; gap: 12px; }
   .profile-hero.has-portrait .hero-content { max-width: calc(100% - 68px); }
   .profile-picture { right: 6px; width: clamp(95px, 22vw, 145px); }

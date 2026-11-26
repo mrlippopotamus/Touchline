@@ -68,6 +68,7 @@ export function toPlayer(raw) {
     attributes: Object.fromEntries(ATTRIBUTES.map(({ key }) => [key, number(meta[key])])),
     retirement: number(meta.retirementYears),
     club: raw.activeContract?.club ? toClub(raw.activeContract.club) : null,
+    contractCreatedAt: dateValue(raw.activeContract?.createdDateTime),
   };
 }
 
@@ -201,6 +202,45 @@ export async function clubPlayers(id) {
   return list(await get("/clubs/" + id + "/players"), "players", "data", "value").map(toPlayer).filter(Boolean);
 }
 
+export async function clubTrainingCoaches(id) {
+  const data = await get("/clubs/" + id + "/training/facilities");
+  if (!Array.isArray(data?.coachContracts) || !["SET_UP", "NOT_SET_UP", "NOT_APPLICABLE"].includes(data.setupStatus)) {
+    throw new Error("MFL returned an incomplete training setup.");
+  }
+  const coaches = new Map();
+  for (const contract of data.coachContracts) {
+    if (contract?.status !== "ACTIVE") continue;
+    const coach = contract.coach;
+    const coachId = recordId(coach?.id);
+    if (!coachId || typeof coach.name !== "string" || !coach.name || !["BASIC", "STANDARD", "ELITE"].includes(coach.tier)) {
+      throw new Error("MFL returned an incomplete coach profile.");
+    }
+    coaches.set(coachId, {
+      name: coach.name,
+      tier: coach.tier,
+      specialties: [coach.primaryAttribute, coach.secondaryAttribute].filter(Boolean).map(attribute => String(attribute).toLowerCase()),
+      primaryBonus: coach.xpBonusByStatPrimary ?? {},
+      dualBonus: coach.xpBonusByStatDual ?? {},
+      globalBonus: number(coach.xpBonusGlobal),
+    });
+  }
+  return { status: data.setupStatus, coaches: [...coaches.values()] };
+}
+
+export async function clubProgressionHistories(id) {
+  const players = await clubPlayers(id);
+  const histories = [];
+  const concurrency = 4;
+  for (let index = 0; index < players.length; index += concurrency) {
+    const batch = players.slice(index, index + concurrency);
+    const results = await Promise.allSettled(batch.map(person => experienceHistory(person.id)));
+    for (const [offset, result] of results.entries()) {
+      histories.push({ person: batch[offset], events: result.value ?? [] });
+    }
+  }
+  return histories;
+}
+
 function clubMatchSide(raw, side) {
   const club = toClub(raw[side + "Squad"]?.club);
   return {
@@ -310,24 +350,42 @@ export async function experienceHistory(id) {
     .sort((a, b) => a.date - b.date);
 }
 
-export function recentProgressionSources(events, changes, checkedAt) {
-  const start = checkedAt - dayMs;
+function* positiveRatingChanges(events, start, end) {
   const ratings = {};
-  const sources = new Map();
   for (const event of events) {
-    if (event.date > checkedAt) break;
-    const recent = event.date >= start && event.reason !== "INITIAL";
+    if (event.date > end) break;
+    const inWindow = event.date >= start && event.reason !== "INITIAL";
     for (const field of progressionFields) {
       const value = number(event.values[field]);
       if (value === null) continue;
       const previous = ratings[field];
       ratings[field] = value;
-      if (!recent || previous === undefined || value <= previous || !(number(changes[field]) > 0)) continue;
-      if (!sources.has(event.reason)) sources.set(event.reason, new Set());
-      sources.get(event.reason).add(field);
+      if (inWindow && previous !== undefined && value > previous) {
+        yield { reason: event.reason, field, gain: value - previous };
+      }
     }
   }
+}
+
+export function recentProgressionSources(events, changes, checkedAt) {
+  const sources = new Map();
+  for (const { reason, field } of positiveRatingChanges(events, checkedAt - dayMs, checkedAt)) {
+    if (!(number(changes[field]) > 0)) continue;
+    if (!sources.has(reason)) sources.set(reason, new Set());
+    sources.get(reason).add(field);
+  }
   return [...sources].map(([reason, fields]) => ({ reason, fields: [...fields] }));
+}
+
+export function clubPlayerGains(events, contractCreatedAt, days, checkedAt, source) {
+  const initial = events.find(event => event.reason === "INITIAL" && event.date <= checkedAt);
+  if (!initial) return null;
+  const start = Math.max(checkedAt - days * dayMs, contractCreatedAt ?? 0);
+  const gains = Object.fromEntries(progressionFields.filter(key => number(initial.values[key]) !== null).map(key => [key, 0]));
+  for (const { reason, field, gain } of positiveRatingChanges(events, start, checkedAt)) {
+    if (!source || reason === source) gains[field] = (gains[field] ?? 0) + gain;
+  }
+  return gains;
 }
 
 export async function matchPage(id, cursor) {
