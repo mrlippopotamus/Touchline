@@ -1,4 +1,4 @@
-import { importMatches, readMatches } from "./browser-store.js";
+import { importMatches, readMatches, readSyncStatus } from "./browser-store.js";
 import { hasMatchAnalysis } from "./matches.js";
 
 const message = document.querySelector("#backup-status");
@@ -33,6 +33,7 @@ fileInput.addEventListener("change", async () => {
   choose.disabled = true;
   message.textContent = "Reading match backup…";
   try {
+    const { resetAt } = await readSyncStatus();
     if (file.size > 20 * 1024 * 1024) throw new Error("Choose a match backup smaller than 20 MB.");
     let backup;
     try {
@@ -41,7 +42,7 @@ fileInput.addEventListener("change", async () => {
       throw new Error("This file could not be read as a JSON match backup.");
     }
     if (!Array.isArray(backup?.matches) || !backup.matches.length) throw new Error("This backup does not contain any matches.");
-    const { inserted, skipped } = await importMatches(backup.matches, "backup");
+    const { inserted, skipped } = await importMatches(backup.matches, "backup", resetAt);
     message.textContent = `${inserted} ${inserted === 1 ? "match" : "matches"} restored.${skipped ? ` ${skipped} already saved.` : ""}`;
   } catch (error) {
     message.textContent = error.message;

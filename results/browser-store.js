@@ -1,5 +1,5 @@
 import {
-  CLUBS, FINAL_STATUSES, LIVE_REFRESH_MS, hasMatchAnalysis, isAllowedMflCompetition, key,
+  CLUBS, FINAL_STATUSES, LIVE_REFRESH_MS, hasMatchAnalysis, isAllowedMflCompetition, key, kickedOffAfterReset,
   legacyMatchKey, matchKey, normalizeMatch, normalizeMatchStats, normalizeScore,
 } from "./matches.js";
 
@@ -12,8 +12,11 @@ let opening;
 function openDatabase() {
   if (!globalThis.indexedDB) throw new Error("Allow site storage in your browser to use Results.");
   opening ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(databaseName, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("dashboard");
+    // Close older connections before a Results reset can establish a new cutoff.
+    const request = indexedDB.open(databaseName, 2);
+    request.onupgradeneeded = event => {
+      if (event.oldVersion === 0) request.result.createObjectStore("dashboard");
+    };
     request.onerror = () => reject(new Error("Touchline could not open match storage. Check your browser’s site storage settings."));
     request.onsuccess = () => {
       const database = request.result;
@@ -57,9 +60,24 @@ export function readMatches() {
   return withDashboard(({ matches }) => matches.filter(match => !match.hidden));
 }
 
-function syncStatus({ checkedAt, leasedUntil, problem }, now) {
-  const dueAt = Math.max(leasedUntil, checkedAt === null ? 0 : checkedAt + LIVE_REFRESH_MS);
-  return { checkedAt, problem, nextCheckIn: Math.max(0, dueAt - now) };
+function syncStatus({ checkedAt, leasedUntil, problem, resetAt = null }, now) {
+  const dueAt = Math.max(leasedUntil, (checkedAt ?? resetAt ?? 0) + LIVE_REFRESH_MS);
+  return { checkedAt, resetAt, problem, nextCheckIn: Math.max(0, dueAt - now) };
+}
+
+export function readSyncStatus() {
+  return withDashboard(dashboard => syncStatus(dashboard, Date.now()));
+}
+
+export function clearSavedMatches(expectedResetAt) {
+  return withDashboard(dashboard => {
+    if ((dashboard.resetAt ?? null) !== expectedResetAt) throw new Error("Another reset was completed. Reopen the confirmation to continue.");
+    const now = Date.now();
+    const resetAt = Math.max(now, (expectedResetAt ?? 0) + 1);
+    const removed = dashboard.matches.length;
+    Object.assign(dashboard, { matches: [], resetAt, checkedAt: null, leasedUntil: 0, problem: "" });
+    return { ...syncStatus(dashboard, now), removed };
+  }, true);
 }
 
 export function beginMflRefresh(manual = false) {
@@ -68,8 +86,9 @@ export function beginMflRefresh(manual = false) {
     const status = syncStatus(dashboard, now);
     if (dashboard.leasedUntil > now || (!manual && status.nextCheckIn > 0)) return { ...status, lease: null };
     dashboard.leasedUntil = now + leaseDuration;
-    const historyStart = dashboard.matches.reduce((earliest, match) =>
-      earliest && earliest <= match.date ? earliest : match.date, null) ?? firstMatchDate;
+    const historyStart = status.resetAt === null
+      ? dashboard.matches.reduce((earliest, match) => earliest && earliest <= match.date ? earliest : match.date, null) ?? firstMatchDate
+      : new Date(status.resetAt).toISOString();
     return { ...status, lease: dashboard.leasedUntil, historyStart };
   }, true);
 }
@@ -149,11 +168,11 @@ function pendingReports(matches, now) {
   return [...new Set(eligible.map(match => match.mflId))].slice(0, reportBatchSize);
 }
 
-export function saveMflRefresh(lease, { finals, failedClubs }) {
+export function saveMflRefresh(lease, { finals, failedClubs }, resetAt = null) {
   return withDashboard(dashboard => {
     const now = Date.now();
-    if (dashboard.leasedUntil !== lease || lease <= now) return syncStatus(dashboard, now);
-    applyOfficialScores(dashboard, finals);
+    if (dashboard.leasedUntil !== lease || lease <= now || (dashboard.resetAt ?? null) !== resetAt) return syncStatus(dashboard, now);
+    applyOfficialScores(dashboard, finals.filter(final => kickedOffAfterReset(final, resetAt)));
     dashboard.checkedAt = now;
     dashboard.leasedUntil = 0;
     dashboard.problem = failedClubs === CLUBS.length ? "MFL could not be reached. Touchline will retry automatically."
@@ -162,9 +181,10 @@ export function saveMflRefresh(lease, { finals, failedClubs }) {
   }, true);
 }
 
-export function saveMflStats(reports) {
+export function saveMflStats(reports, resetAt = null) {
   return withDashboard(dashboard => {
     const now = Date.now();
+    if ((dashboard.resetAt ?? null) !== resetAt) return { pending: [] };
     const byId = new Map(reports.map(report => [report.id, report.stats]));
     for (const match of dashboard.matches) {
       if (!needsReport(match) || !byId.has(match.mflId)) continue;
@@ -180,8 +200,9 @@ function sameScore(saved, candidate) {
   return scoreKey(saved) === scoreKey(candidate) && key(saved.home) === key(candidate.home) && key(saved.away) === key(candidate.away);
 }
 
-export function importMatches(rows, source) {
+export function importMatches(rows, source, resetAt = null) {
   return withDashboard(dashboard => {
+    if ((dashboard.resetAt ?? null) !== resetAt) throw new Error("Results were cleared during the import. Start a new import to add matches.");
     let inserted = 0;
     for (const [index, raw] of rows.entries()) {
       let match;

@@ -2,7 +2,7 @@ import { DEFAULT_OPPOSITION, DEFAULT_PRIOR, analyse, analyseMatch, pairKey, summ
 import { FIELDS, TEMPLATE, fromFile, fromPaste, review } from "./import.js";
 import { latestMflFinals, reportedMflStats } from "./live.js";
 import { CLUBS, IMPORT_SIZE, LIVE_REFRESH_MS, hasMatchAnalysis } from "./matches.js";
-import { beginMflRefresh, importMatches, readMatches, removeSavedMatch, saveMflRefresh, saveMflStats } from "./browser-store.js";
+import { beginMflRefresh, clearSavedMatches, importMatches, readMatches, readSyncStatus, removeSavedMatch, saveMflRefresh, saveMflStats } from "./browser-store.js";
 import { MATCH_HEADERS, clubOptions, confidence, displayDate, escape, format, matchCells, matchesView, matchupsView, matrixView, pickerView, resultBadge, select } from "./views.js";
 
 const app = document.querySelector("#app");
@@ -24,6 +24,7 @@ let model = analyse(matches);
 let ready = false;
 let busy = false;
 let syncing = false;
+let resultsGeneration = 0;
 let mflCheckTimer;
 let imports = [];
 let importName = "";
@@ -45,7 +46,11 @@ function render(focusName) {
     } else link.removeAttribute("aria-current");
   }
   if (!ready) return;
-  app.innerHTML = (view === "matches" ? pendingScores() : "") + views[view](model, state);
+  app.innerHTML = (view === "matches" ? pendingScores() : "") + views[view](model, state) + (view === "matches" ? `
+    <section class="panel section-gap" aria-labelledby="match-data-title"><div class="panel-heading">
+      <div><h2 id="match-data-title">Match data</h2><p class="heading-meta">Start a new results history after a match engine update.</p></div>
+      <button class="button danger" type="button" data-action="clear-matches">Clear all matches</button>
+    </div></section>` : "");
   if (focusName) app.querySelector('[name="' + CSS.escape(focusName) + '"]')?.focus({ preventScroll: true });
 }
 
@@ -65,7 +70,9 @@ function rebuild() {
 }
 
 async function loadMatches() {
+  const generation = resultsGeneration;
   const stored = await readMatches();
+  if (generation !== resultsGeneration) return;
   if (ready && JSON.stringify(matches) === JSON.stringify(stored)) return;
   matches = stored;
   rebuild();
@@ -95,21 +102,27 @@ function scheduleMflCheck(delay) {
   mflCheckTimer = window.setTimeout(() => void refreshFromMfl(), Math.max(1000, delay));
 }
 
-async function saveOfficialScores({ lease, historyStart }) {
-  return saveMflRefresh(lease, await latestMflFinals(historyStart));
+async function saveOfficialScores({ lease, historyStart, resetAt }) {
+  return saveMflRefresh(lease, await latestMflFinals(historyStart), resetAt);
 }
 
-async function saveOfficialReports(pending) {
+async function saveOfficialReports(pending, resetAt) {
   const checked = new Set();
   let saved = false;
   while (pending.length) {
     for (const id of pending) checked.add(id);
     const reports = await Promise.all(pending.map(reportedMflStats));
-    const result = await saveMflStats(reports);
+    const result = await saveMflStats(reports, resetAt);
     saved ||= reports.some(report => report.stats);
     pending = (result.pending ?? []).filter(id => !checked.has(id));
   }
   if (saved) await loadMatches();
+}
+
+function mflCheckStatus({ checkedAt, resetAt }) {
+  if (checkedAt) return "Last MFL check · " + checkTime.format(checkedAt);
+  if (resetAt) return "Collecting matches from " + checkTime.format(resetAt);
+  return "A check is already in progress";
 }
 
 async function refreshFromMfl(manual = false) {
@@ -121,26 +134,26 @@ async function refreshFromMfl(manual = false) {
   window.clearTimeout(mflCheckTimer);
   syncing = true;
   syncButton.disabled = true;
+  const generation = resultsGeneration;
   let nextCheckAt = Date.now() + LIVE_REFRESH_MS;
   try {
     let result = await beginMflRefresh(manual);
+    if (generation !== resultsGeneration) return;
     if (result.lease) {
       syncStatus.textContent = "Checking MFL for finished matches";
       result = await saveOfficialScores(result);
     }
     nextCheckAt = Date.now() + (result.nextCheckIn ?? LIVE_REFRESH_MS);
     await loadMatches();
-    const lastCheck = result.checkedAt
-      ? "Last MFL check · " + checkTime.format(result.checkedAt)
-      : "A check is already in progress";
-    syncStatus.textContent = result.problem || lastCheck;
-    if (result.pending?.length) await saveOfficialReports(result.pending);
+    if (generation !== resultsGeneration) return;
+    syncStatus.textContent = result.problem || mflCheckStatus(result);
+    if (result.pending?.length) await saveOfficialReports(result.pending, result.resetAt);
   } catch {
-    syncStatus.textContent = "The MFL check could not complete. Touchline will retry automatically.";
+    if (generation === resultsGeneration) syncStatus.textContent = "The MFL check could not complete. Touchline will retry automatically.";
   } finally {
     syncing = false;
-    syncButton.disabled = false;
-    scheduleMflCheck(nextCheckAt - Date.now());
+    syncButton.disabled = busy;
+    if (generation === resultsGeneration) scheduleMflCheck(nextCheckAt - Date.now());
   }
 }
 
@@ -223,6 +236,45 @@ function confirmRemove(row) {
   dialog.querySelector(".dialog-actions .secondary").focus();
 }
 
+async function confirmClearMatches() {
+  setBusy(true);
+  try {
+    const { resetAt } = await readSyncStatus();
+    showDialog("Clear all matches?", null, `<p>This permanently deletes saved scores and match stats for all four tracked clubs.</p>
+      <p>Future MFL checks will import finished matches that kick off from the reset time.</p>
+      <p class="error" id="dialog-error" role="alert" hidden></p>`,
+      `<button class="button secondary" data-action="close">Cancel</button>
+      <button class="button danger" data-action="confirm-clear-matches" data-reset-at="${resetAt ?? ""}">Clear all matches</button>`);
+    dialog.querySelector(".dialog-actions .secondary").focus();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function clearMatches(resetAt) {
+  setBusy(true);
+  dialogError("");
+  try {
+    const result = await clearSavedMatches(resetAt);
+    resultsGeneration++;
+    matches = [];
+    state.page = 0;
+    state.matchPair = null;
+    rebuild();
+    dialog.close();
+    render();
+    syncStatus.textContent = mflCheckStatus(result);
+    scheduleMflCheck(result.nextCheckIn);
+    notify("Saved matches cleared.");
+  } catch (error) {
+    dialogError(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 function dialogError(message) {
   const error = dialog.querySelector("#dialog-error");
   error.hidden = !message;
@@ -231,6 +283,7 @@ function dialogError(message) {
 
 function setBusy(value) {
   busy = value;
+  syncButton.disabled = busy || syncing;
   if (!dialog.open) return;
   for (const button of dialog.querySelectorAll("button")) button.disabled = value;
 }
@@ -356,9 +409,10 @@ async function saveImport() {
   setBusy(true);
   dialogError("");
   try {
+    const { resetAt } = await readSyncStatus();
     for (let start = 0; start < rows.length; start += IMPORT_SIZE) {
       dialog.querySelector(".import-info").textContent = "Saving " + Math.min(start + IMPORT_SIZE, rows.length) + " of " + rows.length + " matches…";
-      const result = await importMatches(rows.slice(start, start + IMPORT_SIZE), imports[0].kind);
+      const result = await importMatches(rows.slice(start, start + IMPORT_SIZE), imports[0].kind, resetAt);
       inserted += result.inserted;
       skipped += result.skipped;
     }
@@ -398,6 +452,8 @@ document.addEventListener("click", event => {
     case "match": if (row) matchDetails(row); break;
     case "remove": if (row) confirmRemove(row); break;
     case "confirm-remove": if (row) void removeMatch(row.id); break;
+    case "clear-matches": void confirmClearMatches(); break;
+    case "confirm-clear-matches": void clearMatches(button.dataset.resetAt ? Number(button.dataset.resetAt) : null); break;
     case "choose-file": dialog.querySelector("#import-file").click(); break;
     case "preview-paste": previewPasted(); break;
     case "confirm-import": void saveImport(); break;

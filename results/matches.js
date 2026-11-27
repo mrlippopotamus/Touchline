@@ -5,9 +5,19 @@ export const CLUBS = [
   { code: "KOK", name: "King of Kings", mflClubId: "1354", mflSquadId: "1959" },
 ];
 
+export const READ_SIZE = 400;
 export const IMPORT_SIZE = 400;
 export const LIVE_REFRESH_MS = 6 * 60 * 60 * 1000;
+export const MFL_RESULTS_BATCH_SIZE = 200;
 export const FINAL_STATUSES = ["ENDED", "FORFEITED"];
+
+export function isResetTime(value) {
+  return value === null || (Number.isSafeInteger(value) && value > 0);
+}
+
+export function kickedOffAfterReset(match, resetAt) {
+  return resetAt === null || (Number.isSafeInteger(match.kickoff) && match.kickoff >= resetAt);
+}
 
 export function hasMatchAnalysis(match) {
   return Boolean(match.homeFormation && match.awayFormation)

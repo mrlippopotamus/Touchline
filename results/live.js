@@ -10,7 +10,7 @@ function finalResult(match, trackedClub) {
   if (homeClub !== trackedClub.mflClubId && awayClub !== trackedClub.mflClubId) return null;
   const date = new Date(match.date).toISOString().slice(0, 10);
   return {
-    id: match.id, club: trackedClub.name, date, status: match.status,
+    id: match.id, club: trackedClub.name, date, kickoff: match.date, status: match.status,
     competition: match.competition,
     home: homeClub === trackedClub.mflClubId ? trackedClub.name : match.home.name,
     away: awayClub === trackedClub.mflClubId ? trackedClub.name : match.away.name,
