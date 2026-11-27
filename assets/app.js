@@ -889,6 +889,7 @@ function profileHero(person) {
       <h1>${esc(person.name)}</h1>
       <div class="profile-meta">${rating(person.overall, " OVR")}${positions(person)}
         ${label ? `<span>${esc(label)}</span>` : ""}<span class="wallet-id">#${person.id}</span>
+        <a class="text-button hero-link" href="https://app.playmfl.com/players/${person.id}" target="_blank" rel="noopener noreferrer">View on PlayMFL</a>
       </div>
     </div><div class="profile-picture">${portrait(person)}</div>
   </section>`;
@@ -901,6 +902,7 @@ function attributesPanel(person) {
     ["Height", person.height === null ? "" : person.height + " cm"],
     ["Preferred foot", person.foot],
     ["Nationality", person.nationality],
+    ["Agent", person.agentName],
     ["Retirement", person.retirement === 0 ? "Retired" : person.retirement ? "In " + person.retirement + (person.retirement === 1 ? " season" : " seasons") : ""],
   ].filter(([, value]) => value);
   return `<section class="panel" aria-label="Player attributes">

@@ -65,6 +65,7 @@ export function toPlayer(raw) {
   return {
     id,
     name: [meta.firstName, meta.lastName].filter(Boolean).join(" ") || "Player " + id,
+    agentName: typeof raw.ownedBy?.name === "string" ? raw.ownedBy.name.trim() : "",
     overall: number(meta.overall),
     age: number(meta.age),
     height: number(meta.height),

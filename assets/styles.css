@@ -433,7 +433,7 @@ input::placeholder, textarea::placeholder { color: var(--soft); }
 .profile-facts { list-style: none; margin: 0; padding: 12px 19px 17px; border-top: 1px solid var(--line); display: grid; gap: 7px; }
 .profile-facts li { display: flex; justify-content: space-between; gap: 14px; font-size: .86rem; }
 .profile-facts span { color: var(--muted); }
-.profile-facts strong { text-align: right; }
+.profile-facts strong { text-align: right; overflow-wrap: anywhere; }
 .chart-shell { padding: 0 13px 10px; }
 .chart-shell canvas { display: block; width: 100%; height: 230px; }
 .chart-note { padding: 8px 19px 13px; color: var(--soft); font-size: .8rem; }
